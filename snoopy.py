@@ -133,6 +133,8 @@ class Event:
     source_ip: str
     location: str
     details: str
+    destination_mac: str = ""
+    destination_ip: str = ""
 
 
 @dataclass(frozen=True)
@@ -143,6 +145,8 @@ class DiscoveryRecord:
     identity: str
     source_mac: str
     source_ip: str
+    destination_mac: str
+    destination_ip: str
     location: str
     details: str
     dedupe_key: str
@@ -542,6 +546,8 @@ class SnoopyDashboard(App[None]):
                 identity=event.identity,
                 source_mac=event.source_mac,
                 source_ip=event.source_ip,
+                destination_mac=event.destination_mac,
+                destination_ip=event.destination_ip,
                 location=event.location,
                 details=event.details,
                 dedupe_key=event.dedupe_key,
@@ -564,6 +570,8 @@ class SnoopyDashboard(App[None]):
             identity=existing.identity,
             source_mac=existing.source_mac,
             source_ip=event.source_ip or existing.source_ip,
+            destination_mac=event.destination_mac or existing.destination_mac,
+            destination_ip=event.destination_ip or existing.destination_ip,
             location=event.location or existing.location,
             details=event.details or existing.details,
             dedupe_key=existing.dedupe_key,
@@ -709,27 +717,31 @@ class SnoopyDashboard(App[None]):
             details_widget.write("No discovery selected yet.")
             return
 
-        details_widget.write(
-            "\n".join(
-                [
-                    f"Protocol: {record.protocol}",
-                    f"Identity: {record.identity}",
-                    f"Source IP: {record.source_ip}",
-                    f"Source MAC: {record.source_mac}",
-                    f"Location: {record.location}",
-                    f"First Seen: {record.first_seen.strftime('%Y-%m-%d %H:%M:%S')}",
-                    f"Last Seen: {record.last_seen.strftime('%Y-%m-%d %H:%M:%S')}",
-                    f"Seen Count: {record.seen_count}",
-                    "",
-                    "Details:",
-                    record.details,
-                    "",
-                    "Summary:",
-                    record.summary,
-                ]
-            ),
-            scroll_end=False,
+        lines = [
+            f"Protocol: {record.protocol}",
+            f"Identity: {record.identity}",
+            f"Source IP: {record.source_ip}",
+            f"Source MAC: {record.source_mac}",
+        ]
+        if record.destination_ip:
+            lines.append(f"Destination IP: {record.destination_ip}")
+        if record.destination_mac:
+            lines.append(f"Destination MAC: {record.destination_mac}")
+        lines.extend(
+            [
+                f"Location: {record.location}",
+                f"First Seen: {record.first_seen.strftime('%Y-%m-%d %H:%M:%S')}",
+                f"Last Seen: {record.last_seen.strftime('%Y-%m-%d %H:%M:%S')}",
+                f"Seen Count: {record.seen_count}",
+                "",
+                "Details:",
+                record.details,
+                "",
+                "Summary:",
+                record.summary,
+            ]
         )
+        details_widget.write("\n".join(lines), scroll_end=False)
 
     def record_to_dict(self, record: DiscoveryRecord) -> dict[str, str | int]:
         """Convert a discovery record to a JSON-serializable mapping."""
@@ -739,6 +751,8 @@ class SnoopyDashboard(App[None]):
             "identity": record.identity,
             "source_ip": record.source_ip,
             "source_mac": record.source_mac,
+            "destination_ip": record.destination_ip,
+            "destination_mac": record.destination_mac,
             "location": record.location,
             "details": record.details,
             "dedupe_key": record.dedupe_key,
@@ -1060,6 +1074,8 @@ def decode_lldp(context: PacketContext, payload: bytes) -> Event | None:
         source_ip=",".join(mgmt_addresses) or "n/a",
         location=location,
         details=details,
+        destination_mac=context.dst_mac,
+        destination_ip=context.dst_ip or "",
     )
 
 
@@ -1149,6 +1165,8 @@ def decode_cdp(context: PacketContext, payload: bytes) -> Event | None:
         source_ip=source_ip,
         location=location,
         details=details,
+        destination_mac=context.dst_mac,
+        destination_ip=context.dst_ip or "",
     )
 
 
@@ -1354,6 +1372,8 @@ def decode_dhcp(context: PacketContext, payload: bytes) -> Event | None:
             source_ip=source_ip,
             location=location,
             details=" | ".join(detail_parts) or f"message_type={message_name}",
+            destination_mac=context.dst_mac,
+            destination_ip=context.dst_ip or "",
         )
 
     client_identity = hostname or client_mac or context.src_mac
@@ -1378,6 +1398,8 @@ def decode_dhcp(context: PacketContext, payload: bytes) -> Event | None:
         source_ip=source_ip,
         location=location,
         details=" | ".join(detail_parts),
+        destination_mac=context.dst_mac,
+        destination_ip=context.dst_ip or "",
     )
 
 
@@ -1630,6 +1652,8 @@ def decode_mdns(context: PacketContext, payload: bytes) -> Event | None:
         source_ip=context.src_ip or "n/a",
         location=qr,
         details=" | ".join(details) or "mDNS traffic",
+        destination_mac=context.dst_mac,
+        destination_ip=context.dst_ip or "",
     )
 
 
@@ -1680,6 +1704,8 @@ def decode_nbns(context: PacketContext, payload: bytes) -> Event | None:
         source_ip=context.src_ip or "n/a",
         location=kind,
         details=f"names={','.join(decoded_names[:8])}",
+        destination_mac=context.dst_mac,
+        destination_ip=context.dst_ip or "",
     )
 
 
@@ -1751,6 +1777,8 @@ def decode_ssdp(context: PacketContext, payload: bytes) -> Event | None:
         source_ip=context.src_ip or "n/a",
         location=location,
         details=" | ".join(detail_parts) or start_line,
+        destination_mac=context.dst_mac,
+        destination_ip=context.dst_ip or "",
     )
 
 
@@ -1804,6 +1832,8 @@ def decode_ws_discovery(context: PacketContext, payload: bytes) -> Event | None:
         source_ip=context.src_ip or "n/a",
         location=action_name,
         details=" | ".join(detail_parts) or action,
+        destination_mac=context.dst_mac,
+        destination_ip=context.dst_ip or "",
     )
 
 
@@ -1930,6 +1960,8 @@ def decode_ospf(context: PacketContext, payload: bytes) -> Event | None:
         source_ip=context.src_ip or "n/a",
         location=area_id,
         details=" | ".join(detail_parts),
+        destination_mac=context.dst_mac,
+        destination_ip=context.dst_ip or "",
     )
 
 
@@ -1957,6 +1989,8 @@ def decode_ospfv3(context: PacketContext, payload: bytes) -> Event | None:
         source_ip=context.src_ip or "n/a",
         location=area_id,
         details=f"area={area_id} | type={packet_name}",
+        destination_mac=context.dst_mac,
+        destination_ip=context.dst_ip or "",
     )
 
 
