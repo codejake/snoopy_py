@@ -1,5 +1,7 @@
 # Snoopy
 
+![snoopy.py](assets/snoopy-py.jpg)
+
 `snoopy.py` is a passive local-network reconnaissance tool with a Textual TUI. It listens for common discovery and routing traffic already present on the LAN, turns that traffic into structured discovery events, and presents the results in a live dashboard.
 
 It does not actively scan or probe hosts. Instead, it watches traffic such as LLDP, CDP, mDNS, NBNS, SSDP, WS-Discovery, and OSPF/OSPFv3 to help you understand what devices and services are advertising themselves.
