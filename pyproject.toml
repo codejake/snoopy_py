@@ -1,5 +1,5 @@
 [project]
-name = "snoopy-py"
+name = "snoopy-passive-recon"
 version = "0.1.0"
 description = "A passive network recon tool"
 readme = "README.md"
