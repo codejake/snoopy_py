@@ -21,6 +21,11 @@ This repository is intentionally compact. It centers on the single user-facing s
 - Treat `tcpdump` as a required external dependency. It is not managed by `uv`.
 - Minimize third-party dependencies and justify any new dependency before adding it.
 
+## Git
+- Create one commit per completed task or logical change.
+- Use clear commit messages that describe what changed and why.
+- For commits made by the agent, append the trailer `Coauthored-by: Codex <noreply@openai.com>`.
+
 ## Environment Expectations
 
 - Python target: `3.13`
