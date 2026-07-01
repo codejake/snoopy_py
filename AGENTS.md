@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-This repository is intentionally compact. It centers on the single user-facing script [snoopy.py](/Users/jshaw/Projects/snoopy-passive-recon/snoopy.py:1) plus `uv` project metadata in [pyproject.toml](/Users/jshaw/Projects/snoopy-passive-recon/pyproject.toml:1).
+This repository is intentionally compact. It centers on the single user-facing script `snoopy.py` plus `uv` project metadata in `pyproject.toml`.
 
 `snoopy.py` is a passive local-network reconnaissance dashboard. It:
 
@@ -77,6 +77,8 @@ Validation guidance:
 - Do not modify unrelated files.
 - Do not make destructive git changes unless explicitly requested.
 - Do not store secrets in code.
+- Do not leak machine-specific local filesystem paths into tracked files in this repo.
+- Use portable references such as repo-relative paths or plain filenames instead of absolute local paths.
 
 ## Documentation Expectations
 

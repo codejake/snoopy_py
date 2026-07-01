@@ -36,7 +36,7 @@ This repository is configured for `uv` and currently expects:
 - Runtime dependency: `textual>=8.2.8`
 - External system dependency: `tcpdump`
 
-The authoritative Python project metadata lives in [pyproject.toml](/Users/jshaw/Projects/snoopy_py/pyproject.toml:1). The script also carries an inline `uv` header so it can be run directly as an executable.
+The authoritative Python project metadata lives in `pyproject.toml`. The script also carries an inline `uv` header so it can be run directly as an executable.
 
 ## Setup
 
