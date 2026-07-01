@@ -1,0 +1,9 @@
+[project]
+name = "snoopy-py"
+version = "0.1.0"
+description = "A passive network recon tool"
+readme = "README.md"
+requires-python = ">=3.13"
+dependencies = [
+    "textual>=8.2.8",
+]
