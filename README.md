@@ -71,7 +71,7 @@ Run the app through `uv`:
 uv run snoopy.py
 ```
 
-Because packet capture often requires privileges, a common invocation is, but try to avoid it:
+Because packet capture often requires privileges, but try to avoid it, a common invocation is:
 
 ```bash
 sudo uv run snoopy.py
