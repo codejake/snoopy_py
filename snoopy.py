@@ -96,7 +96,7 @@ LLC_SNAP_SSAP: Final[int] = 0xAA
 SNAP_CISCO_OUI: Final[bytes] = b"\x00\x00\x0c"
 SNAP_PID_CDP: Final[int] = 0x2000
 DEVICE_TABLE_FIXED_COLUMNS: Final[dict[str, int]] = {
-    "protocol": 10,
+    "protocol": 18,
     "identity": 28,
     "source_ip": 20,
     "source_mac": 18,
@@ -154,6 +154,38 @@ class DiscoveryRecord:
     last_seen: datetime
     seen_count: int
     summary: str
+
+
+@dataclass(frozen=True)
+class DeviceRecord:
+    """Aggregated view of likely observations from one physical device."""
+
+    protocol: str
+    identity: str
+    source_mac: str
+    source_ip: str
+    location: str
+    details: str
+    dedupe_key: str
+    first_seen: datetime
+    last_seen: datetime
+    seen_count: int
+    summary: str
+    aliases: tuple[str, ...]
+    observation_keys: tuple[str, ...]
+
+
+@dataclass
+class DeviceAggregate:
+    """Mutable aggregate used while inferring physical devices."""
+
+    records: list[DiscoveryRecord]
+    aliases: set[str]
+    identities: set[str]
+    source_macs: set[str]
+    source_ips: set[str]
+    locations: list[str]
+    protocols: Counter[str]
 
 
 @dataclass(frozen=True)
@@ -256,10 +288,10 @@ class SnoopyDashboard(App[None]):
     """Textual dashboard for passive local-network discovery."""
 
     COLUMN_LABELS: Final[dict[str, str]] = {
-        "protocol": "Protocol",
-        "identity": "Identity",
-        "source_ip": "Source IP",
-        "source_mac": "Source MAC",
+        "protocol": "Protocols",
+        "identity": "Device",
+        "source_ip": "Primary IP",
+        "source_mac": "Primary MAC",
         "location": "Location",
         "seen_count": "Seen",
         "last_seen": "Last Seen",
@@ -348,6 +380,7 @@ class SnoopyDashboard(App[None]):
         self.message_queue: queue.SimpleQueue[ControlMessage] = queue.SimpleQueue()
         self.capture_thread: threading.Thread | None = None
         self.records: dict[str, DiscoveryRecord] = {}
+        self.devices: dict[str, DeviceRecord] = {}
         self.protocol_counts: Counter[str] = Counter()
         self.total_events = 0
         self.started_at = datetime.now()
@@ -365,9 +398,9 @@ class SnoopyDashboard(App[None]):
             with Vertical(id="left-pane"):
                 yield Static(id="status")
                 yield Static(id="summary")
-                yield Static("Discovered Devices", id="devices-title")
+                yield Static("Inferred Devices", id="devices-title")
                 yield DataTable(id="devices")
-                yield Static("Selected Discovery", id="details-title")
+                yield Static("Selected Device", id="details-title")
                 yield RichLog(
                     id="details-pane", markup=False, wrap=True, highlight=False
                 )
@@ -386,16 +419,14 @@ class SnoopyDashboard(App[None]):
         table.cursor_type = "row"
         table.zebra_stripes = True
         table.add_column(
-            "Protocol", key="protocol", width=DEVICE_TABLE_FIXED_COLUMNS["protocol"]
+            "Protocols", key="protocol", width=DEVICE_TABLE_FIXED_COLUMNS["protocol"]
+        )
+        table.add_column("Device", key="identity", width=DEVICE_TABLE_FIXED_COLUMNS["identity"])
+        table.add_column(
+            "Primary IP", key="source_ip", width=DEVICE_TABLE_FIXED_COLUMNS["source_ip"]
         )
         table.add_column(
-            "Identity", key="identity", width=DEVICE_TABLE_FIXED_COLUMNS["identity"]
-        )
-        table.add_column(
-            "Source IP", key="source_ip", width=DEVICE_TABLE_FIXED_COLUMNS["source_ip"]
-        )
-        table.add_column(
-            "Source MAC",
+            "Primary MAC",
             key="source_mac",
             width=DEVICE_TABLE_FIXED_COLUMNS["source_mac"],
         )
@@ -474,6 +505,7 @@ class SnoopyDashboard(App[None]):
     def action_save_devices(self) -> None:
         """Save the discovered-device state to a JSON file in the current directory."""
 
+        self.refresh_devices()
         output_path = Path.cwd() / (
             f"snoopy-discoveries-{datetime.now().strftime('%Y%m%d-%H%M%S')}.json"
         )
@@ -481,11 +513,12 @@ class SnoopyDashboard(App[None]):
             "generated_at": datetime.now().isoformat(),
             "interface": self.interface,
             "total_events": self.total_events,
-            "unique_discoveries": len(self.records),
-            "discoveries": [
-                self.record_to_dict(record)
+            "unique_devices": len(self.devices),
+            "raw_observations": len(self.records),
+            "devices": [
+                self.device_to_dict(record)
                 for record in sorted(
-                    self.records.values(),
+                    self.devices.values(),
                     key=lambda record: (record.last_seen, record.identity),
                     reverse=True,
                 )
@@ -493,7 +526,7 @@ class SnoopyDashboard(App[None]):
         }
         output_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
         self.status_message = (
-            f"Saved {len(self.records)} discoveries to {output_path.name}"
+            f"Saved {len(self.devices)} devices to {output_path.name}"
         )
         self.refresh_status()
 
@@ -531,6 +564,7 @@ class SnoopyDashboard(App[None]):
                 self.refresh_status()
 
         if updated:
+            self.refresh_devices()
             self.refresh_summary()
             self.refresh_table()
 
@@ -584,6 +618,11 @@ class SnoopyDashboard(App[None]):
         self.refresh_status()
         return True
 
+    def refresh_devices(self) -> None:
+        """Rebuild inferred device state from the raw observation records."""
+
+        self.devices = infer_devices(self.records)
+
     def refresh_status(self) -> None:
         """Refresh the top status banner."""
 
@@ -615,7 +654,7 @@ class SnoopyDashboard(App[None]):
             "\n".join(
                 [
                     f"Uptime: {str(uptime).split('.', maxsplit=1)[0]}",
-                    f"Unique discoveries: {len(self.records)} | Total events: {self.total_events}",
+                    f"Unique devices: {len(self.devices)} | Raw observations: {len(self.records)} | Total events: {self.total_events}",
                     f"Protocols: {protocol_parts}",
                     f"Sort: {self.COLUMN_LABELS[self.sort_column]} {'desc' if self.sort_reverse else 'asc'}",
                 ]
@@ -629,7 +668,7 @@ class SnoopyDashboard(App[None]):
         table.clear(columns=False)
 
         ordered_records = sorted(
-            self.records.values(),
+            self.devices.values(),
             key=self.record_sort_value,
             reverse=self.sort_reverse,
         )
@@ -655,14 +694,14 @@ class SnoopyDashboard(App[None]):
             return
 
         selected_key = self.selected_record_key or first_key
-        if selected_key not in self.records:
+        if selected_key not in self.devices:
             selected_key = first_key
 
         if selected_key is not None:
             row_index = table.get_row_index(selected_key)
             table.move_cursor(row=row_index)
             self.selected_record_key = selected_key
-            self.refresh_details(self.records[selected_key])
+            self.refresh_details(self.devices[selected_key])
 
     def on_data_table_header_selected(self, event: DataTable.HeaderSelected) -> None:
         """Toggle sort direction when a column header is selected."""
@@ -676,8 +715,8 @@ class SnoopyDashboard(App[None]):
         self.refresh_summary()
         self.refresh_table()
 
-    def record_sort_value(self, record: DiscoveryRecord) -> tuple[object, str]:
-        """Return the active sort value for a discovery record."""
+    def record_sort_value(self, record: DeviceRecord) -> tuple[object, str]:
+        """Return the active sort value for an inferred device record."""
 
         value: object
         if self.sort_column == "protocol":
@@ -705,46 +744,109 @@ class SnoopyDashboard(App[None]):
 
         row_key = str(event.row_key.value) if event.row_key is not None else None
         self.selected_record_key = row_key
-        record = self.records.get(row_key) if row_key is not None else None
-        self.refresh_details(record)
+        device = self.devices.get(row_key) if row_key is not None else None
+        self.refresh_details(device)
 
-    def refresh_details(self, record: DiscoveryRecord | None) -> None:
-        """Render the full details for the selected discovery."""
+    def refresh_details(self, record: DeviceRecord | None) -> None:
+        """Render the full details for the selected device."""
 
         details_widget = self.query_one("#details-pane", RichLog)
         details_widget.clear()
         if record is None:
-            details_widget.write("No discovery selected yet.")
+            details_widget.write("No device selected yet.")
             return
 
-        lines = [
-            f"Protocol: {record.protocol}",
-            f"Identity: {record.identity}",
-            f"Source IP: {record.source_ip}",
-            f"Source MAC: {record.source_mac}",
+        observations = [
+            self.records[key]
+            for key in record.observation_keys
+            if key in self.records
         ]
-        if record.destination_ip:
-            lines.append(f"Destination IP: {record.destination_ip}")
-        if record.destination_mac:
-            lines.append(f"Destination MAC: {record.destination_mac}")
-        lines.extend(
-            [
-                f"Location: {record.location}",
-                f"First Seen: {record.first_seen.strftime('%Y-%m-%d %H:%M:%S')}",
-                f"Last Seen: {record.last_seen.strftime('%Y-%m-%d %H:%M:%S')}",
-                f"Seen Count: {record.seen_count}",
-                "",
-                "Details:",
-                record.details,
-                "",
-                "Summary:",
-                record.summary,
-            ]
-        )
+        observations.sort(key=lambda item: (item.protocol, item.last_seen), reverse=True)
+        observation_lines = self.format_protocol_sections(observations)
+
+        lines = [
+            f"Device: {record.identity}",
+            f"Protocols: {record.protocol}",
+            f"Primary IP: {record.source_ip}",
+            f"Primary MAC: {record.source_mac}",
+            f"Location: {record.location}",
+            f"Aliases: {', '.join(record.aliases) or 'none'}",
+            f"First Seen: {record.first_seen.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Last Seen: {record.last_seen.strftime('%Y-%m-%d %H:%M:%S')}",
+            f"Observation Count: {record.seen_count}",
+            "",
+            "Device Summary:",
+            record.details,
+            "",
+            "Observations:",
+            *observation_lines,
+        ]
         details_widget.write("\n".join(lines), scroll_end=False)
 
-    def record_to_dict(self, record: DiscoveryRecord) -> dict[str, str | int]:
-        """Convert a discovery record to a JSON-serializable mapping."""
+    def format_protocol_sections(
+        self, observations: list[DiscoveryRecord]
+    ) -> list[str]:
+        """Render observations grouped into distinct protocol sections."""
+
+        sections: list[str] = []
+        grouped: dict[str, list[DiscoveryRecord]] = {}
+        for observation in observations:
+            grouped.setdefault(observation.protocol, []).append(observation)
+
+        for protocol in sorted(grouped):
+            sections.append(f"[{protocol}]")
+            for observation in sorted(
+                grouped[protocol],
+                key=lambda item: item.last_seen,
+                reverse=True,
+            ):
+                sections.append(
+                    f"  [{observation.last_seen.strftime('%H:%M:%S')}] "
+                    f"id={observation.identity} src_ip={observation.source_ip} src_mac={observation.source_mac}"
+                )
+                extras: list[str] = [
+                    f"location={observation.location}",
+                    f"seen={observation.seen_count}",
+                ]
+                if observation.destination_ip:
+                    extras.append(f"dst_ip={observation.destination_ip}")
+                if observation.destination_mac:
+                    extras.append(f"dst_mac={observation.destination_mac}")
+                sections.append(f"    {' | '.join(extras)}")
+                sections.append(f"    {observation.details}")
+            sections.append("")
+
+        while sections and not sections[-1]:
+            sections.pop()
+        return sections
+
+    def device_to_dict(self, record: DeviceRecord) -> dict[str, str | int | list[str] | list[dict[str, str | int]]]:
+        """Convert an inferred device record to a JSON-serializable mapping."""
+
+        return {
+            "protocol": record.protocol,
+            "identity": record.identity,
+            "source_ip": record.source_ip,
+            "source_mac": record.source_mac,
+            "location": record.location,
+            "details": record.details,
+            "dedupe_key": record.dedupe_key,
+            "first_seen": record.first_seen.isoformat(),
+            "last_seen": record.last_seen.isoformat(),
+            "seen_count": record.seen_count,
+            "summary": record.summary,
+            "aliases": list(record.aliases),
+            "observations": [
+                self.observation_to_dict(self.records[key])
+                for key in record.observation_keys
+                if key in self.records
+            ],
+        }
+
+    def observation_to_dict(
+        self, record: DiscoveryRecord
+    ) -> dict[str, str | int]:
+        """Convert a raw observation record to a JSON-serializable mapping."""
 
         return {
             "protocol": record.protocol,
@@ -2022,6 +2124,326 @@ def dedupe_preserve(values: list[str]) -> list[str]:
             seen.add(value)
             output.append(value)
     return output
+
+
+def infer_devices(records: dict[str, DiscoveryRecord]) -> dict[str, DeviceRecord]:
+    """Group raw observations into likely physical devices."""
+
+    aggregates: list[DeviceAggregate | None] = []
+    alias_to_index: dict[str, int] = {}
+
+    for record in sorted(records.values(), key=lambda item: (item.first_seen, item.identity)):
+        aliases = observation_aliases(record)
+        matched_indexes = sorted(
+            {alias_to_index[alias] for alias in aliases if alias in alias_to_index}
+        )
+        if matched_indexes:
+            aggregate_index = matched_indexes[0]
+            for other_index in matched_indexes[1:]:
+                merge_device_aggregates(
+                    aggregates, alias_to_index, aggregate_index, other_index
+                )
+        else:
+            aggregate_index = len(aggregates)
+            aggregates.append(
+                DeviceAggregate(
+                    records=[],
+                    aliases=set(),
+                    identities=set(),
+                    source_macs=set(),
+                    source_ips=set(),
+                    locations=[],
+                    protocols=Counter(),
+                )
+            )
+
+        aggregate = aggregates[aggregate_index]
+        assert aggregate is not None
+        aggregate.records.append(record)
+        aggregate.aliases.update(aliases)
+        aggregate.protocols[record.protocol] += 1
+        if useful_text(record.identity):
+            aggregate.identities.add(record.identity)
+        if is_mac_address(record.source_mac):
+            aggregate.source_macs.add(record.source_mac.lower())
+        for ip_value in split_observation_ips(record.source_ip):
+            aggregate.source_ips.add(ip_value)
+        if useful_text(record.location):
+            aggregate.locations.append(record.location)
+        for alias in aliases:
+            alias_to_index[alias] = aggregate_index
+
+    devices: dict[str, DeviceRecord] = {}
+    for aggregate in aggregates:
+        if aggregate is None or not aggregate.records:
+            continue
+
+        protocols = tuple(sorted(aggregate.protocols))
+        identity = choose_device_identity(aggregate)
+        primary_ip = choose_primary_ip(aggregate)
+        primary_mac = choose_primary_mac(aggregate)
+        location = choose_device_location(aggregate)
+        aliases = tuple(sorted(display_alias(alias) for alias in aggregate.aliases))
+        observation_keys = tuple(
+            record.dedupe_key
+            for record in sorted(
+                aggregate.records,
+                key=lambda item: (item.last_seen, item.protocol, item.identity),
+                reverse=True,
+            )
+        )
+        details = summarize_device(aggregate)
+        device_key = choose_device_key(aggregate, identity, primary_ip, primary_mac)
+        first_seen = min(record.first_seen for record in aggregate.records)
+        last_seen = max(record.last_seen for record in aggregate.records)
+        seen_count = sum(record.seen_count for record in aggregate.records)
+
+        devices[device_key] = DeviceRecord(
+            protocol=",".join(protocols),
+            identity=identity,
+            source_mac=primary_mac,
+            source_ip=primary_ip,
+            location=location,
+            details=details,
+            dedupe_key=device_key,
+            first_seen=first_seen,
+            last_seen=last_seen,
+            seen_count=seen_count,
+            summary=f"{identity} via {', '.join(protocols)}",
+            aliases=aliases,
+            observation_keys=observation_keys,
+        )
+
+    return devices
+
+
+def merge_device_aggregates(
+    aggregates: list[DeviceAggregate | None],
+    alias_to_index: dict[str, int],
+    target_index: int,
+    source_index: int,
+) -> None:
+    """Merge one in-progress device aggregate into another."""
+
+    if source_index == target_index:
+        return
+    source = aggregates[source_index]
+    target = aggregates[target_index]
+    if source is None or target is None:
+        return
+
+    target.records.extend(source.records)
+    target.aliases.update(source.aliases)
+    target.identities.update(source.identities)
+    target.source_macs.update(source.source_macs)
+    target.source_ips.update(source.source_ips)
+    target.locations.extend(source.locations)
+    target.protocols.update(source.protocols)
+    for alias in source.aliases:
+        alias_to_index[alias] = target_index
+    aggregates[source_index] = None
+
+
+def observation_aliases(record: DiscoveryRecord) -> set[str]:
+    """Extract identity aliases from a raw observation."""
+
+    aliases: set[str] = set()
+    if is_mac_address(record.source_mac):
+        aliases.add(f"mac:{record.source_mac.lower()}")
+
+    for ip_value in split_observation_ips(record.source_ip):
+        aliases.add(f"ip:{ip_value}")
+
+    identity = record.identity.strip()
+    if not identity:
+        return aliases
+    if is_mac_address(identity):
+        aliases.add(f"mac:{identity.lower()}")
+    elif is_ip_address(identity):
+        aliases.add(f"ip:{identity}")
+    elif useful_text(identity):
+        aliases.add(f"id:{identity.casefold()}")
+    return aliases
+
+
+def split_observation_ips(value: str) -> list[str]:
+    """Split a possibly comma-delimited source IP field into usable IPs."""
+
+    parts = [part.strip() for part in value.split(",")]
+    return [
+        part
+        for part in parts
+        if part and part != "n/a" and is_ip_address(part)
+    ]
+
+
+def choose_device_identity(aggregate: DeviceAggregate) -> str:
+    """Choose the most human-friendly label for an inferred device."""
+
+    scored_candidates: list[tuple[int, datetime, str]] = []
+    for record in aggregate.records:
+        candidate = record.identity.strip()
+        if not useful_text(candidate):
+            continue
+        scored_candidates.append(
+            (device_identity_score(record.protocol, candidate), record.last_seen, candidate)
+        )
+    if scored_candidates:
+        return max(scored_candidates)[2]
+    primary_ip = choose_primary_ip(aggregate)
+    if primary_ip != "n/a":
+        return primary_ip
+    primary_mac = choose_primary_mac(aggregate)
+    if primary_mac != "n/a":
+        return primary_mac
+    return "unknown-device"
+
+
+def device_identity_score(protocol: str, value: str) -> int:
+    """Score identity candidates for device-centric presentation."""
+
+    score = {
+        "LLDP": 100,
+        "CDP": 95,
+        "NBNS": 80,
+        "mDNS": 70,
+        "DHCP": 65,
+        "WS-Discovery": 60,
+        "SSDP": 50,
+        "OSPF": 40,
+        "OSPFv3": 40,
+    }.get(protocol, 50)
+    lowered = value.casefold()
+    if ".local" in lowered or lowered.endswith(".lan"):
+        score += 8
+    if any(marker in lowered for marker in ("uuid:", "urn:", "upnp", "_tcp", "_udp")):
+        score -= 20
+    if "<" in value and ">" in value:
+        score -= 10
+    if is_ip_address(value) or is_mac_address(value):
+        score -= 25
+    return score
+
+
+def choose_primary_ip(aggregate: DeviceAggregate) -> str:
+    """Pick the most useful IP address for an inferred device."""
+
+    if not aggregate.source_ips:
+        return "n/a"
+    return max(aggregate.source_ips, key=ip_preference)
+
+
+def ip_preference(value: str) -> tuple[int, str]:
+    """Rank IPs for display preference."""
+
+    address = ipaddress.ip_address(value)
+    if address.is_private and not address.is_link_local:
+        rank = 4
+    elif address.is_global:
+        rank = 3
+    elif address.is_link_local:
+        rank = 2
+    else:
+        rank = 1
+    return (rank, value)
+
+
+def choose_primary_mac(aggregate: DeviceAggregate) -> str:
+    """Pick the best representative MAC address for an inferred device."""
+
+    if not aggregate.source_macs:
+        return "n/a"
+    return sorted(aggregate.source_macs)[0]
+
+
+def choose_device_location(aggregate: DeviceAggregate) -> str:
+    """Choose a representative location string for an inferred device."""
+
+    if not aggregate.locations:
+        return "n/a"
+    scores = [
+        (
+            device_location_score(location),
+            aggregate.locations.count(location),
+            location,
+        )
+        for location in set(aggregate.locations)
+    ]
+    return max(scores)[2]
+
+
+def device_location_score(location: str) -> int:
+    """Score location strings, preferring switch-port style values."""
+
+    lowered = location.casefold()
+    if any(token in lowered for token in ("gi", "fa", "te", "ethernet", "port")):
+        return 3
+    if lowered in {"query", "response", "broadcast"}:
+        return 1
+    return 2
+
+
+def summarize_device(aggregate: DeviceAggregate) -> str:
+    """Create a compact table summary for an inferred device."""
+
+    parts = [f"signals={','.join(sorted(aggregate.protocols))}"]
+    identities = [
+        identity
+        for identity in sorted(aggregate.identities)
+        if identity != choose_primary_mac(aggregate)
+    ]
+    if identities:
+        parts.append(f"ids={','.join(identities[:3])}")
+    if aggregate.source_ips:
+        parts.append(f"ips={','.join(sorted(aggregate.source_ips)[:3])}")
+    return " | ".join(parts)
+
+
+def choose_device_key(
+    aggregate: DeviceAggregate,
+    identity: str,
+    primary_ip: str,
+    primary_mac: str,
+) -> str:
+    """Create a stable selection key for an inferred device."""
+
+    if useful_text(identity) and not is_ip_address(identity) and not is_mac_address(identity):
+        return f"device:id:{identity.casefold()}"
+    if primary_ip != "n/a":
+        return f"device:ip:{primary_ip}"
+    if primary_mac != "n/a":
+        return f"device:mac:{primary_mac}"
+    return f"device:obs:{aggregate.records[0].dedupe_key}"
+
+
+def display_alias(alias: str) -> str:
+    """Convert an internal alias token into human-readable text."""
+
+    _, value = alias.split(":", maxsplit=1)
+    return value
+
+
+def useful_text(value: str) -> bool:
+    """Return whether a string contains a meaningful, displayable value."""
+
+    return bool(value and value.strip() and value.strip() != "n/a")
+
+
+def is_ip_address(value: str) -> bool:
+    """Return whether the given string is an IP address."""
+
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
+def is_mac_address(value: str) -> bool:
+    """Return whether the given string looks like a MAC address."""
+
+    parts = value.split(":")
+    return len(parts) == 6 and all(len(part) == 2 for part in parts)
 
 
 def main() -> int:
